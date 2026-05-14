@@ -58,7 +58,7 @@ Restart Claude Code (or open a new session) to see the status line.
 
 ## Requirements
 
-- **bash** 4 or newer
+- **bash** 3.2 or newer (the stock macOS system bash works — no Homebrew bash needed)
 - **python3** (one short script parses Claude Code's JSON input)
 - **git** (optional — only used to populate the git segment)
 - **jj** (optional — used only if you set `STATUSLINE_VCS` to `jj` or `auto`; needs a `bookmarks`-era release, jj 0.21 or newer)

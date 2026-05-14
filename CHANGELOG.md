@@ -28,6 +28,10 @@ follow [SemVer](https://semver.org/).
 - `CONTRIBUTING.md` documenting test workflow, config vars, and style.
 
 ### Fixed
+- **bash 3.2 compatibility.** Replaced `mapfile` (a bash 4+ builtin) with a
+  portable `while read` loop in `statusline.sh` and `install.sh`, and dropped
+  the bash-4 version gate. The status line now runs on the stock macOS system
+  bash with no Homebrew bash required.
 - **macOS env cache.** `stat -c %Y` is GNU-only; on macOS the call failed
   silently and the cache was treated as stale every refresh, re-running
   `ruby`/`node`/`python3` on every status line. Switched to a portable

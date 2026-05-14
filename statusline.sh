@@ -17,7 +17,7 @@
 #               STATUSLINE_SHOW_{ENV,VERSION,BURN,STASH,DATE,OUTPUT_STYLE},
 #               STATUSLINE_VCS=auto|git|jj|off
 #  Debug     :  CLAUDE_STATUSLINE_DEBUG=1  →  ~/.claude/statusline-debug.log
-#  Deps      :  bash 4+, python3, git (optional), jj (optional)
+#  Deps      :  bash 3.2+, python3, git (optional), jj (optional)
 # ============================================================================
 
 set -u
@@ -250,7 +250,12 @@ for line in out:
 PYEOF
 )
 
-mapfile -t F < <(printf '%s' "$input" | python3 -c "$PY_CODE" 2>/dev/null)
+# Read parsed fields into F[]. A plain while-read loop (rather than mapfile)
+# keeps this working on bash 3.2 — the version Apple still ships with macOS.
+F=()
+while IFS= read -r _line || [[ -n "$_line" ]]; do
+  F+=("$_line")
+done < <(printf '%s' "$input" | python3 -c "$PY_CODE" 2>/dev/null)
 
 cwd="${F[0]:-}"
 proj_dir="${F[1]:-}"

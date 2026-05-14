@@ -30,7 +30,7 @@ ENVIRONMENT
     CLAUDE_CONFIG_DIR    Override the install directory (default ~/.claude).
 
 REQUIREMENTS
-    bash 4+, python3, git (optional, only used at runtime).
+    bash 3.2+, python3, git (optional, only used at runtime).
 
 UNINSTALL
     bash uninstall.sh
@@ -45,11 +45,6 @@ fi
 # ── Dependency checks ───────────────────────────────────────────────────────
 if ! command -v python3 >/dev/null 2>&1; then
   echo "[error] python3 is required but was not found in PATH." >&2
-  exit 1
-fi
-
-if (( BASH_VERSINFO[0] < 4 )); then
-  echo "[error] bash 4+ is required (you are running ${BASH_VERSION})." >&2
   exit 1
 fi
 
@@ -80,17 +75,16 @@ if [[ -f "$SETTINGS" ]]; then
   echo "[ok] backed up existing settings.json -> $BACKUP"
 
   # Keep the 5 most recent settings.json.bak.* files and delete older ones.
-  # The find -print0 + sort form is portable across GNU and BSD tools.
+  # while-read (not mapfile) keeps this working on bash 3.2 (stock macOS).
   KEEP=5
-  mapfile -t OLD_BACKUPS < <(
+  while IFS= read -r old; do
+    [[ -z "$old" ]] && continue
+    rm -f -- "$old" && echo "[ok] pruned old backup $old"
+  done < <(
     find "$CLAUDE_DIR" -maxdepth 1 -name 'settings.json.bak.*' -type f 2>/dev/null \
       | sort -r \
       | tail -n +$((KEEP + 1))
   )
-  for old in "${OLD_BACKUPS[@]:-}"; do
-    [[ -z "$old" ]] && continue
-    rm -f -- "$old" && echo "[ok] pruned old backup $old"
-  done
 fi
 
 # ── Merge the statusLine block ──────────────────────────────────────────────

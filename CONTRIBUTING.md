@@ -60,7 +60,9 @@ ANSI variables (`GRN`, `YEL`, `ORG`, `RED`, `BLU`, `CYN`, `GLD`, `PNK`,
 
 ## Style
 
-- Bash 4+. No external deps beyond `python3`, `git`, and (optionally) `jj`.
+- Bash 3.2+ (stock macOS bash) — no `mapfile`, associative arrays, or other
+  bash-4-only features. No external deps beyond `python3`, `git`, and
+  (optionally) `jj`.
 - One `python3` invocation per refresh — don't add more spawns to the hot path.
 - Add a `STATUSLINE_SHOW_<thing>` toggle for any new segment so users can opt out.
 - Update `tests/fixtures/` and `tests/expected/` for any rendering change.
