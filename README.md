@@ -10,25 +10,22 @@ A two-line, information-dense status line for [Claude Code](https://docs.claude.
 
 ## Preview
 
-```
-▎ claude-statusline › src  │  main ●3 +1 ~2 ?1 +47/-12  │  Opus 4.7 1M ★concise v2.0.42  │  14:32 Thu 14  │  WSL · ruby 3.3 · node 22
-▎ ctx ██▎░░░░░░░ 23% 187k/1.00M  │  $0.487 2m22s +569/-0  │  5h ████▎░░░ 52% →18:00 (3h28m)  │  7d ███▎░░░░ 41% →Mon 18 (3d20h)
-```
+![Claude Code status line preview](docs/preview.png)
 
 **Line 1** — workspace · git · model · time · environment
 **Line 2** — context bar · session cost · 5-hour rate limit · 7-day rate limit
 
 | Segment | Shows |
 | --- | --- |
-| `repo › subpath` | Project name and sub-path within the project |
-| `main ●3 +1 ~2 ?1 +47/-12` | Branch, dirty count, staged/unstaged/untracked, diff `+/-` lines, ahead/behind |
-| `Opus 4.7 1M ★concise v2.0.42` | Model, 1M-context tag, output style, Claude Code version |
-| `14:32 Thu 14` | Local time and weekday |
+| `claude-statusline` | Project name (and `› subpath` when you're inside a sub-folder) |
+| `main` | Git branch, plus dirty count `●N`, staged `+N`, unstaged `~N`, untracked `?N`, diff `+/-` lines, ahead `↑` / behind `↓` |
+| `Opus 4.7 (1M context) v2.1.141` | Model name, optional `1M` context tag, Claude Code version |
+| `04:22 Thu 14` | Local time and weekday |
 | `WSL · ruby 3.3 · node 22` | Environment (cached 1h) |
-| `ctx … 23% 187k/1.00M` | Context window used, with sub-cell precision bar |
-| `$0.487 2m22s +569/-0` | Total session cost, duration, lines added/removed |
-| `5h … 52% →18:00 (3h28m)` | 5-hour rate-limit window: used %, absolute reset, ETA |
-| `7d … 41% →Mon 18 (3d20h)` | 7-day rate-limit window: used %, absolute reset, ETA |
+| `ctx … 0% 0/1.00M` | Context window used, with sub-cell precision bar |
+| `$0.000 1m01s` | Total session cost, duration, and `+/-` lines once you start editing |
+| `5h … 31% →07:10 (2h47m)` | 5-hour rate-limit window: used %, absolute reset, ETA |
+| `7d … 36% →Mon 18 (4d7h)` | 7-day rate-limit window: used %, absolute reset, ETA |
 
 Colors shift `green → yellow → orange → red` as bars approach 100%. The status line auto-compacts when the terminal is narrower than 100 columns.
 
