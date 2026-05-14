@@ -1,7 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "bash /home/wiremaze/.claude/statusline.sh",
+    "command": "bash /home/YOUR_USER/.claude/statusline.sh",
     "padding": 1,
     "refreshInterval": 1
   }

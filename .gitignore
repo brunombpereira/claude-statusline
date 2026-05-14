@@ -1,0 +1,10 @@
+# Status line runtime artifacts (live under ~/.claude/, not the repo, but
+# guard against accidental commits if someone copies them in by mistake).
+statusline-debug.log
+.statusline-env-cache
+
+# Editor / OS junk
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
