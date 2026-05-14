@@ -1,0 +1,2 @@
+▎ example-project › src/components  │  Opus 4.7 (1M context) ★concise v2.1.141  │  05:20 Wed 14
+▎ ctx ███████▊░░ 78% 780k/1.00M  │  $4.275 30m20s +412/-87 $8.46/h  │  5h █████▊░░ 73% →08:50 (3h30m)  │  7d ███████▎ 92% →Sun 18 (4d0h)

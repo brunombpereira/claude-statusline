@@ -78,6 +78,19 @@ if [[ -f "$SETTINGS" ]]; then
   BACKUP="$SETTINGS.bak.$(date +%Y%m%d-%H%M%S)"
   cp "$SETTINGS" "$BACKUP"
   echo "[ok] backed up existing settings.json -> $BACKUP"
+
+  # Keep the 5 most recent settings.json.bak.* files and delete older ones.
+  # The find -print0 + sort form is portable across GNU and BSD tools.
+  KEEP=5
+  mapfile -t OLD_BACKUPS < <(
+    find "$CLAUDE_DIR" -maxdepth 1 -name 'settings.json.bak.*' -type f 2>/dev/null \
+      | sort -r \
+      | tail -n +$((KEEP + 1))
+  )
+  for old in "${OLD_BACKUPS[@]:-}"; do
+    [[ -z "$old" ]] && continue
+    rm -f -- "$old" && echo "[ok] pruned old backup $old"
+  done
 fi
 
 # ── Merge the statusLine block ──────────────────────────────────────────────

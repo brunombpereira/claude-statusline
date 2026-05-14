@@ -3,23 +3,90 @@
 #  ~/.claude/statusline.sh — Premium status line for Claude Code
 # ----------------------------------------------------------------------------
 #  Two-line dashboard with:
-#    L1 → repo › subpath │ git (branch · dirty · staged/unstaged/untracked
-#                         · diff +/- · ahead/behind · rebase/merge state)
+#    L1 → repo › subpath │ vcs (git or jj, with state, dirty, stash, ahead/behind)
 #         │ model · output_style · version │ time · date │ env (cached)
-#    L2 → ctx bar % tokens │ cost · duration · lines │ 5h bar % reset
-#                                                    │ 7d bar % reset
+#    L2 → ctx bar % tokens │ cost · duration · lines · burn │ 5h bar % reset
+#                                                          │ 7d bar % reset
 #
-#  Auto compact mode when COLUMNS < 110.
+#  Auto compact mode when COLUMNS < 100.
 #
-#  Debug:  CLAUDE_STATUSLINE_DEBUG=1   →  ~/.claude/statusline-debug.log
-#  Deps :  bash 4+, python3, git (optional)
+#  CLI       :  --version | --help (only when no JSON is being piped on stdin)
+#  Config    :  ~/.claude/statusline.conf (optional, shell-sourced)
+#  Env vars  :  CLAUDE_STATUSLINE_COMPACT, CLAUDE_STATUSLINE_DEBUG,
+#               CLAUDE_CONFIG_DIR, NO_COLOR,
+#               STATUSLINE_SHOW_{ENV,VERSION,BURN,STASH,DATE,OUTPUT_STYLE},
+#               STATUSLINE_VCS=auto|git|jj|off
+#  Debug     :  CLAUDE_STATUSLINE_DEBUG=1  →  ~/.claude/statusline-debug.log
+#  Deps      :  bash 4+, python3, git (optional), jj (optional)
 # ============================================================================
 
 set -u
+
+VERSION="1.1.0"
+
+# ─── CLI handling ───────────────────────────────────────────────────────────
+# Claude Code always invokes without args, so these only fire when a user
+# runs the script manually.
+case "${1:-}" in
+  --version|-V)
+    echo "claude-statusline $VERSION"
+    exit 0
+    ;;
+  --help|-h)
+    cat <<EOF
+claude-statusline $VERSION — two-line status line for Claude Code
+
+USAGE
+    bash statusline.sh                  # normal use (JSON on stdin)
+    bash statusline.sh --version
+    bash statusline.sh --help
+
+CONFIG FILE
+    \$CLAUDE_CONFIG_DIR/statusline.conf (default ~/.claude/statusline.conf)
+    Sourced as bash if present. Override palette colors (GRN, RED, …) or
+    toggle segments. See CONTRIBUTING.md for the full variable list.
+
+ENV VARS
+    CLAUDE_STATUSLINE_COMPACT=1    force compact mode
+    CLAUDE_STATUSLINE_DEBUG=1      log raw JSON to statusline-debug.log
+    CLAUDE_CONFIG_DIR              override ~/.claude
+    NO_COLOR                       suppress ANSI escapes (no-color.org)
+    STATUSLINE_SHOW_ENV=0          hide env (WSL/ruby/node/python) segment
+    STATUSLINE_SHOW_VERSION=0      hide Claude Code version
+    STATUSLINE_SHOW_BURN=0         hide \$/h burn rate
+    STATUSLINE_SHOW_STASH=0        hide git stash count
+    STATUSLINE_SHOW_DATE=0         hide weekday/date
+    STATUSLINE_SHOW_OUTPUT_STYLE=0 hide output_style indicator
+    STATUSLINE_VCS=auto|git|jj|off pick or disable the VCS segment
+
+PROJECT
+    https://github.com/brunombpereira/claude-statusline
+EOF
+    exit 0
+    ;;
+esac
+
 input=$(cat)
 
-LOG=~/.claude/statusline-debug.log
-ENV_CACHE=~/.claude/.statusline-env-cache
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+LOG="$CLAUDE_DIR/statusline-debug.log"
+ENV_CACHE="$CLAUDE_DIR/.statusline-env-cache"
+CONFIG_FILE="$CLAUDE_DIR/statusline.conf"
+
+# ─── Optional user config (shell-sourced) ───────────────────────────────────
+# Lets users override palette colors and segment toggles without editing this
+# script. Sourced verbatim — keep your config trusted.
+# shellcheck source=/dev/null
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+# ─── Defaults for toggle vars (set after sourcing so config wins) ───────────
+: "${STATUSLINE_SHOW_ENV:=1}"
+: "${STATUSLINE_SHOW_VERSION:=1}"
+: "${STATUSLINE_SHOW_BURN:=1}"
+: "${STATUSLINE_SHOW_STASH:=1}"
+: "${STATUSLINE_SHOW_DATE:=1}"
+: "${STATUSLINE_SHOW_OUTPUT_STYLE:=1}"
+: "${STATUSLINE_VCS:=auto}"
 
 # ─── Debug logging ──────────────────────────────────────────────────────────
 if [[ "${CLAUDE_STATUSLINE_DEBUG:-0}" == "1" ]]; then
@@ -41,10 +108,17 @@ except Exception as e: print("  parse_error:", e)
   } >> "$LOG" 2>&1
 fi
 
-# ─── JSON parsing (single python3 call, 24 lines out) ───────────────────────
+# ─── JSON parsing (single python3 call) ─────────────────────────────────────
 PY_CODE=$(cat << 'PYEOF'
-import sys, json, time
+import sys, json, time, os
 from datetime import datetime
+
+# Override "now" for deterministic tests; otherwise use wall clock.
+_NOW_OVERRIDE = os.environ.get('STATUSLINE_TEST_NOW')
+def _now_ts():
+    return float(_NOW_OVERRIDE) if _NOW_OVERRIDE else time.time()
+def _now_dt():
+    return datetime.fromtimestamp(float(_NOW_OVERRIDE)) if _NOW_OVERRIDE else datetime.now()
 
 raw = sys.stdin.read()
 try:
@@ -82,7 +156,7 @@ def fmt_dur(ms):
 def fmt_reset_abs(ts):
     if not ts: return ''
     try:
-        diff = float(ts) - time.time()
+        diff = float(ts) - _now_ts()
         if diff <= 0: return 'now'
         t = datetime.fromtimestamp(float(ts))
         if diff < 86400: return t.strftime('%H:%M')
@@ -93,7 +167,7 @@ def fmt_reset_abs(ts):
 def fmt_reset_eta(ts):
     if not ts: return ''
     try:
-        diff = float(ts) - time.time()
+        diff = float(ts) - _now_ts()
         if diff <= 0: return 'now'
         if diff < 3600:  return f'{int(diff//60)}m'
         if diff < 86400: return f'{int(diff//3600)}h{int((diff%3600)//60):02d}m'
@@ -104,13 +178,24 @@ def to_pct(v, default=-1):
     try: return max(0, min(100, round(float(v))))
     except Exception: return default
 
+def burn_rate(cost, dur_ms):
+    # $/hour, only meaningful once the session has run for ≥30s.
+    try:
+        c = float(cost); ms = float(dur_ms)
+    except Exception:
+        return ''
+    if ms < 30_000 or c <= 0: return ''
+    per_hour = c / (ms / 3_600_000.0)
+    if per_hour < 1:    return f'${per_hour:.2f}/h'
+    if per_hour < 10:   return f'${per_hour:.2f}/h'
+    return f'${per_hour:.1f}/h'
+
 cwd        = g('workspace.current_dir') or g('cwd')
 proj_dir   = g('workspace.project_dir')
 model_id   = g('model.id')
 model_name = g('model.display_name')
 version    = g('version')
 out_style  = g('output_style.name')
-sess_id    = g('session_id')
 
 ctx_pct  = g('context_window.used_percentage', '0')
 ctx_used = g('context_window.total_input_tokens', '0')
@@ -135,10 +220,9 @@ except Exception: la = 0
 try: ld = int(float(lines_del or 0))
 except Exception: ld = 0
 
-now = datetime.now()
+now = _now_dt()
 out = [
     cwd, proj_dir, model_id, model_name, version, out_style,
-    sess_id[-6:] if sess_id else '',
     str(to_pct(ctx_pct, 0)),
     fmt_tokens(ctx_used),
     fmt_tokens(ctx_size),
@@ -159,6 +243,7 @@ out = [
     ('1M' if model_id and '1m' in model_id.lower()
             and '1m' not in (model_name or '').lower()
        else ''),
+    burn_rate(cost_usd, cost_dur),
 ]
 for line in out:
     print(line if line is not None else '')
@@ -173,24 +258,24 @@ model_id="${F[2]:-}"
 model_name="${F[3]:-}"
 version="${F[4]:-}"
 out_style="${F[5]:-}"
-sess_short="${F[6]:-}"
-ctx_pct="${F[7]:-0}"
-ctx_used="${F[8]:-0}"
-ctx_size="${F[9]:-0}"
-cost_fmt="\$${F[10]:-0.000}"
-cost_dur="${F[11]:-}"
-cost_api="${F[12]:-}"
-lines_add="${F[13]:-0}"
-lines_del="${F[14]:-0}"
-r5_pct="${F[15]:--1}"
-r5_abs="${F[16]:-}"
-r5_eta="${F[17]:-}"
-r7_pct="${F[18]:--1}"
-r7_abs="${F[19]:-}"
-r7_eta="${F[20]:-}"
-clock="${F[21]:-}"
-today="${F[22]:-}"
-ctx_tag="${F[23]:-}"
+ctx_pct="${F[6]:-0}"
+ctx_used="${F[7]:-0}"
+ctx_size="${F[8]:-0}"
+cost_fmt="\$${F[9]:-0.000}"
+cost_dur="${F[10]:-}"
+cost_api="${F[11]:-}"
+lines_add="${F[12]:-0}"
+lines_del="${F[13]:-0}"
+r5_pct="${F[14]:--1}"
+r5_abs="${F[15]:-}"
+r5_eta="${F[16]:-}"
+r7_pct="${F[17]:--1}"
+r7_abs="${F[18]:-}"
+r7_eta="${F[19]:-}"
+clock="${F[20]:-}"
+today="${F[21]:-}"
+ctx_tag="${F[22]:-}"
+burn="${F[23]:-}"
 
 # ─── Terminal width ─────────────────────────────────────────────────────────
 # Claude Code does not reliably set COLUMNS when invoking the status-line
@@ -209,7 +294,7 @@ repo_name=""; sub_path=""
 if [[ -n "$cwd" ]]; then
   if [[ -n "$proj_dir" && "$cwd" == "$proj_dir"* ]]; then
     repo_name=$(basename "$proj_dir")
-    rel="${cwd#$proj_dir}"
+    rel="${cwd#"$proj_dir"}"
     sub_path="${rel#/}"
   else
     repo_name=$(basename "$cwd")
@@ -219,19 +304,61 @@ if (( COMPACT )) && [[ -n "$sub_path" && ${#sub_path} -gt 18 ]]; then
   sub_path="…/$(basename "$(dirname "$sub_path")")/$(basename "$sub_path")"
 fi
 
-# ─── Git info (single porcelain v2 call) ────────────────────────────────────
+# ─── VCS info ───────────────────────────────────────────────────────────────
+# STATUSLINE_VCS = auto|git|jj|off
+#   auto: prefer jj when jj is installed AND `jj root` succeeds in $cwd,
+#         fall back to git
+#   git : only git
+#   jj  : only jj
+#   off : skip the VCS segment entirely
+vcs_kind=""              # "git" | "jj" | "" (none)
 branch=""; dirty=0; staged=0; unstaged=0; untracked=0
-ahead=0; behind=0; git_state=""; diff_a=0; diff_d=0
+ahead=0; behind=0; git_state=""; diff_a=0; diff_d=0; stash_count=0
+jj_change=""; jj_bookmarks=""; jj_dirty=0
 
-if [[ -n "$cwd" ]] && git_top=$(git -C "$cwd" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); then
-  if [[ -d "$git_top/.git/rebase-merge" || -d "$git_top/.git/rebase-apply" ]]; then
-    git_state="rebase"
-  elif [[ -f "$git_top/.git/MERGE_HEAD" ]]; then
-    git_state="merge"
-  elif [[ -f "$git_top/.git/CHERRY_PICK_HEAD" ]]; then
-    git_state="cherry"
-  elif [[ -f "$git_top/.git/REVERT_HEAD" ]]; then
-    git_state="revert"
+want_jj=0; want_git=0
+case "$STATUSLINE_VCS" in
+  off) ;;
+  git) want_git=1 ;;
+  jj)  want_jj=1 ;;
+  *)   want_jj=1; want_git=1 ;;   # auto
+esac
+
+if (( want_jj )) && [[ -n "$cwd" ]] && command -v jj >/dev/null 2>&1 \
+   && ( cd "$cwd" 2>/dev/null && jj root >/dev/null 2>&1 ); then
+  vcs_kind="jj"
+  # jj resolves the repo by walking up from the working directory (its
+  # --repository flag wants the repo root, not an arbitrary subdir), so run
+  # the call from inside $cwd via a subshell.
+  # Single templated call: change_id\nbookmarks\ndirty-flag
+  jj_out=$( cd "$cwd" 2>/dev/null && jj --no-pager log -r @ --no-graph \
+      -T 'change_id.short(8) ++ "\n" ++ bookmarks.join(",") ++ "\n" ++ if(empty, "0", "1")' \
+      2>/dev/null) || jj_out=""
+  if [[ -n "$jj_out" ]]; then
+    jj_change=$(printf '%s\n' "$jj_out" | sed -n '1p')
+    jj_bookmarks=$(printf '%s\n' "$jj_out" | sed -n '2p')
+    jj_dirty=$(printf '%s\n' "$jj_out" | sed -n '3p')
+    jj_dirty="${jj_dirty:-0}"
+  fi
+fi
+
+if [[ -z "$vcs_kind" ]] && (( want_git )) && [[ -n "$cwd" ]] \
+   && git_top=$(git -C "$cwd" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); then
+  vcs_kind="git"
+  # Resolve the actual gitdir so worktrees and submodules report state too.
+  git_dir=$(git -C "$cwd" --no-optional-locks rev-parse --git-dir 2>/dev/null)
+  [[ -n "$git_dir" && "$git_dir" != /* ]] && git_dir="$cwd/$git_dir"
+
+  if [[ -n "$git_dir" ]]; then
+    if [[ -d "$git_dir/rebase-merge" || -d "$git_dir/rebase-apply" ]]; then
+      git_state="rebase"
+    elif [[ -f "$git_dir/MERGE_HEAD" ]]; then
+      git_state="merge"
+    elif [[ -f "$git_dir/CHERRY_PICK_HEAD" ]]; then
+      git_state="cherry"
+    elif [[ -f "$git_dir/REVERT_HEAD" ]]; then
+      git_state="revert"
+    fi
   fi
 
   porcelain=$(git -C "$cwd" --no-optional-locks status --porcelain=v2 --branch 2>/dev/null) || porcelain=""
@@ -277,48 +404,70 @@ if [[ -n "$cwd" ]] && git_top=$(git -C "$cwd" --no-optional-locks rev-parse --sh
     )
     diff_a=${diff_a:-0}; diff_d=${diff_d:-0}
   fi
+
+  if (( STATUSLINE_SHOW_STASH )) && [[ -n "$git_dir" && -f "$git_dir/refs/stash" ]]; then
+    stash_count=$(git -C "$cwd" --no-optional-locks stash list 2>/dev/null | wc -l | tr -d ' ')
+    stash_count="${stash_count:-0}"
+  fi
 fi
 
-# ─── Environment info (cached 1h) ───────────────────────────────────────────
+# ─── Environment info (cached 1h, portable mtime check) ─────────────────────
 env_info=""
-if [[ -f "$ENV_CACHE" ]] && (( $(date +%s) - $(stat -c %Y "$ENV_CACHE" 2>/dev/null || echo 0) < 3600 )); then
-  env_info=$(<"$ENV_CACHE")
-else
-  parts=()
-  grep -qi microsoft /proc/version 2>/dev/null && parts+=("WSL")
-  if command -v ruby &>/dev/null; then
-    rb=$(ruby -e 'print RUBY_VERSION' 2>/dev/null)
-    [[ -n "$rb" ]] && parts+=("ruby ${rb%.*}")
+if (( STATUSLINE_SHOW_ENV )); then
+  # `find -mmin +60` is portable across GNU/BSD/macOS coreutils.
+  if [[ -f "$ENV_CACHE" ]] && [[ -z "$(find "$ENV_CACHE" -mmin +60 -print 2>/dev/null)" ]]; then
+    env_info=$(<"$ENV_CACHE")
+  else
+    parts=()
+    grep -qi microsoft /proc/version 2>/dev/null && parts+=("WSL")
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+      parts+=("venv $(basename "$VIRTUAL_ENV")")
+    elif command -v python3 &>/dev/null; then
+      pv=$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+      [[ -n "$pv" ]] && parts+=("py $pv")
+    fi
+    if command -v ruby &>/dev/null; then
+      rb=$(ruby -e 'print RUBY_VERSION' 2>/dev/null)
+      [[ -n "$rb" ]] && parts+=("ruby ${rb%.*}")
+    fi
+    if command -v node &>/dev/null; then
+      nv=$(node -v 2>/dev/null | tr -d 'v')
+      [[ -n "$nv" ]] && parts+=("node ${nv%%.*}")
+    fi
+    joined=""
+    for p in "${parts[@]:-}"; do
+      [[ -z "$p" ]] && continue
+      [[ -n "$joined" ]] && joined+=" · "
+      joined+="$p"
+    done
+    env_info="$joined"
+    # Cache even an empty result so we don't re-probe every refresh.
+    printf '%s' "$env_info" > "$ENV_CACHE" 2>/dev/null || true
   fi
-  if command -v node &>/dev/null; then
-    nv=$(node -v 2>/dev/null | tr -d 'v')
-    [[ -n "$nv" ]] && parts+=("node ${nv%%.*}")
-  fi
-  joined=""
-  for p in "${parts[@]:-}"; do
-    [[ -z "$p" ]] && continue
-    [[ -n "$joined" ]] && joined+=" · "
-    joined+="$p"
-  done
-  env_info="$joined"
-  printf '%s' "$env_info" > "$ENV_CACHE" 2>/dev/null || true
 fi
 
 # ─── ANSI palette (256-color) ───────────────────────────────────────────────
-R=$'\033[0m'
-B=$'\033[1m'
-DIM=$'\033[2m'
-GRN=$'\033[38;5;76m'
-YEL=$'\033[38;5;220m'
-ORG=$'\033[38;5;208m'
-RED=$'\033[38;5;203m'
-BLU=$'\033[38;5;39m'
-CYN=$'\033[38;5;87m'
-GLD=$'\033[38;5;214m'
-PNK=$'\033[38;5;213m'
-PUR=$'\033[38;5;177m'
-WHT=$'\033[38;5;253m'
-GRY=$'\033[38;5;244m'
+# Honor NO_COLOR (https://no-color.org): suppress every escape when set.
+if [[ -n "${NO_COLOR:-}" ]]; then
+  R=''; B=''; DIM=''
+  GRN=''; YEL=''; ORG=''; RED=''; BLU=''; CYN=''
+  GLD=''; PNK=''; PUR=''; WHT=''; GRY=''
+else
+  R=$'\033[0m'
+  B=$'\033[1m'
+  DIM=$'\033[2m'
+  GRN=$'\033[38;5;76m'
+  YEL=$'\033[38;5;220m'
+  ORG=$'\033[38;5;208m'
+  RED=$'\033[38;5;203m'
+  BLU=$'\033[38;5;39m'
+  CYN=$'\033[38;5;87m'
+  GLD=$'\033[38;5;214m'
+  PNK=$'\033[38;5;213m'
+  PUR=$'\033[38;5;177m'
+  WHT=$'\033[38;5;253m'
+  GRY=$'\033[38;5;244m'
+fi
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 pct_color() {
@@ -352,7 +501,7 @@ bar() {
 ctx_color=$(pct_color "$ctx_pct")
 r5_color=$(pct_color  "$r5_pct")
 r7_color=$(pct_color  "$r7_pct")
-branch_color=$([[ "$dirty" -gt 0 ]] && printf '%s' "$PNK" || printf '%s' "$GRN")
+branch_color=$([[ "$dirty" -gt 0 || "$jj_dirty" == "1" ]] && printf '%s' "$PNK" || printf '%s' "$GRN")
 
 EDGE="${BLU}${B}▎${R}"
 SEP="  ${GRY}│${R}  "
@@ -370,30 +519,40 @@ render_line() {
   printf '\n'
 }
 
-# ─── Line 1 — workspace · git · model · time · env ──────────────────────────
+# ─── Line 1 — workspace · vcs · model · time · env ──────────────────────────
 seg_workspace=""
 if [[ -n "$repo_name" ]]; then
   seg_workspace="${B}${CYN}${repo_name}${R}"
   [[ -n "$sub_path" ]] && seg_workspace+=" ${GRY}›${R} ${WHT}${sub_path}${R}"
 fi
 
-seg_git=""
-if [[ -n "$branch" ]]; then
-  seg_git="${branch_color}${B}${branch}${R}"
-  [[ -n "$git_state" ]] && seg_git+=" ${RED}${B}[${git_state}]${R}"
+seg_vcs=""
+if [[ "$vcs_kind" == "git" && -n "$branch" ]]; then
+  seg_vcs="${branch_color}${B}${branch}${R}"
+  [[ -n "$git_state" ]] && seg_vcs+=" ${RED}${B}[${git_state}]${R}"
   if (( dirty > 0 )); then
-    seg_git+=" ${RED}${B}●${R}${RED}${dirty}${R}"
+    seg_vcs+=" ${RED}${B}●${R}${RED}${dirty}${R}"
     if (( ! COMPACT )); then
-      (( staged    > 0 )) && seg_git+=" ${GRN}+${staged}${R}"
-      (( unstaged  > 0 )) && seg_git+=" ${YEL}~${unstaged}${R}"
-      (( untracked > 0 )) && seg_git+=" ${BLU}?${untracked}${R}"
+      (( staged    > 0 )) && seg_vcs+=" ${GRN}+${staged}${R}"
+      (( unstaged  > 0 )) && seg_vcs+=" ${YEL}~${unstaged}${R}"
+      (( untracked > 0 )) && seg_vcs+=" ${BLU}?${untracked}${R}"
       if (( diff_a > 0 || diff_d > 0 )); then
-        seg_git+=" ${GRN}+${diff_a}${R}${DIM}/${R}${RED}-${diff_d}${R}"
+        seg_vcs+=" ${GRN}+${diff_a}${R}${DIM}/${R}${RED}-${diff_d}${R}"
       fi
     fi
   fi
-  (( ahead  > 0 )) && seg_git+=" ${CYN}↑${ahead}${R}"
-  (( behind > 0 )) && seg_git+=" ${ORG}↓${behind}${R}"
+  (( ahead       > 0 )) && seg_vcs+=" ${CYN}↑${ahead}${R}"
+  (( behind      > 0 )) && seg_vcs+=" ${ORG}↓${behind}${R}"
+  (( stash_count > 0 )) && (( ! COMPACT )) && seg_vcs+=" ${PUR}⚑${stash_count}${R}"
+elif [[ "$vcs_kind" == "jj" && -n "$jj_change" ]]; then
+  # jj: change id, optional bookmark(s), dirty flag
+  if [[ -n "$jj_bookmarks" ]]; then
+    seg_vcs="${branch_color}${B}${jj_bookmarks}${R} ${GRY}@${R}${branch_color}${jj_change}${R}"
+  else
+    seg_vcs="${branch_color}${B}${jj_change}${R}"
+  fi
+  [[ "$jj_dirty" == "1" ]] && seg_vcs+=" ${RED}${B}●${R}"
+  seg_vcs+=" ${DIM}(jj)${R}"
 fi
 
 seg_model=""
@@ -401,16 +560,22 @@ if [[ -n "$model_name" ]]; then
   seg_model="${PUR}${B}${model_name}${R}"
   [[ -n "$ctx_tag" ]] && seg_model+=" ${DIM}${ctx_tag}${R}"
   if (( ! COMPACT )); then
-    [[ -n "$out_style" && "$out_style" != "default" ]] \
-      && seg_model+=" ${GLD}★${R}${DIM}${out_style}${R}"
-    [[ -n "$version" ]] && seg_model+=" ${GRY}v${version}${R}"
+    if (( STATUSLINE_SHOW_OUTPUT_STYLE )); then
+      [[ -n "$out_style" && "$out_style" != "default" ]] \
+        && seg_model+=" ${GLD}★${R}${DIM}${out_style}${R}"
+    fi
+    if (( STATUSLINE_SHOW_VERSION )); then
+      [[ -n "$version" ]] && seg_model+=" ${GRY}v${version}${R}"
+    fi
   fi
 fi
 
 seg_time=""
 if [[ -n "$clock" ]]; then
   seg_time="${CYN}${B}${clock}${R}"
-  (( ! COMPACT )) && [[ -n "$today" ]] && seg_time+=" ${GRY}${today}${R}"
+  if (( ! COMPACT )) && (( STATUSLINE_SHOW_DATE )) && [[ -n "$today" ]]; then
+    seg_time+=" ${GRY}${today}${R}"
+  fi
 fi
 
 seg_env=""
@@ -418,7 +583,7 @@ if (( ! COMPACT )) && [[ -n "$env_info" ]]; then
   seg_env="${DIM}${env_info}${R}"
 fi
 
-render_line "$seg_workspace" "$seg_git" "$seg_model" "$seg_time" "$seg_env"
+render_line "$seg_workspace" "$seg_vcs" "$seg_model" "$seg_time" "$seg_env"
 
 # ─── Line 2 — context · cost · 5h · 7d ──────────────────────────────────────
 seg_ctx="${DIM}ctx${R} $(bar "$ctx_pct" "$ctx_color" $((COMPACT ? 6 : 10))) ${ctx_color}${B}${ctx_pct}%${R}"
@@ -430,6 +595,9 @@ if (( ! COMPACT )); then
   if [[ "$lines_add" =~ ^[0-9]+$ && "$lines_del" =~ ^[0-9]+$ ]] \
      && (( lines_add > 0 || lines_del > 0 )); then
     seg_cost+=" ${GRN}+${lines_add}${R}${DIM}/${R}${RED}-${lines_del}${R}"
+  fi
+  if (( STATUSLINE_SHOW_BURN )) && [[ -n "$burn" ]]; then
+    seg_cost+=" ${GLD}${burn}${R}"
   fi
 fi
 
